@@ -8,7 +8,7 @@
 # 3. 支持状态的序列化和反序列化
 # =============================================================================
 
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
@@ -71,3 +71,37 @@ def get_conversation_history(state: ChatState, max_messages: int = 10) -> List[B
     """
     # 返回最近的max_messages条消息
     return state["messages"][-max_messages:] if len(state["messages"]) > max_messages else state["messages"]
+
+
+# =============================================================================
+# 双模型状态定义
+# =============================================================================
+
+class DualModelState(ChatState):
+    """【双模型聊天状态】
+    扩展基础聊天状态，添加双模型处理所需的字段。
+    
+    继承自ChatState，保留所有基础聊天功能，同时添加：
+    - 两个模型的独立回答
+    - 整合后的回答
+    - 处理阶段跟踪
+    
+    Attributes:
+        messages: 继承自ChatState的消息历史
+        gemini_response: Gemini模型的回答
+        siliconflow_response: 硅基流动模型的回答
+        integrated_response: 整合后的最终回答
+        processing_stage: 当前处理阶段
+    """
+    
+    # Gemini模型的回答
+    gemini_response: Optional[str]
+    
+    # 硅基流动模型的回答
+    siliconflow_response: Optional[str]
+    
+    # 整合后的最终回答
+    integrated_response: Optional[str]
+    
+    # 处理阶段：initial, parallel_query, integration, completed, error
+    processing_stage: str

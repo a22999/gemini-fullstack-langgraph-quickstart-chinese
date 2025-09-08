@@ -13,11 +13,115 @@ FastAPI应用主入口 (FastAPI Application Main Entry)
 """
 
 import pathlib  # 路径处理工具
-from fastapi import FastAPI, Response  # FastAPI框架和响应类
+from fastapi import FastAPI, Response, HTTPException  # FastAPI框架和响应类
 from fastapi.staticfiles import StaticFiles  # 静态文件服务
+from pydantic import BaseModel  # 数据验证模型
+from typing import List, Dict, Any  # 类型注解
+from langchain_core.messages import HumanMessage, AIMessage  # LangChain消息类型
+
+# 导入双模型聊天图
+from src.chat.graph import dual_model_chat_graph
+from src.chat.state import DualModelState
 
 # 定义FastAPI应用实例
 app = FastAPI()
+
+
+# =============================================================================
+# API数据模型定义
+# =============================================================================
+
+class ChatMessage(BaseModel):
+    """聊天消息模型"""
+    role: str  # "user" 或 "assistant"
+    content: str  # 消息内容
+
+
+class DualModelChatRequest(BaseModel):
+    """双模型聊天请求模型"""
+    message: str  # 用户输入的消息
+    conversation_history: List[ChatMessage] = []  # 对话历史
+
+
+class DualModelChatResponse(BaseModel):
+    """双模型聊天响应模型"""
+    gemini_response: str  # Gemini模型的回答
+    siliconflow_response: str  # 硅基流动模型的回答
+    integrated_response: str  # 整合后的最终回答
+    processing_stage: str  # 处理阶段
+    success: bool  # 是否成功
+    error_message: str | None = None  # 错误信息（如果有）
+
+
+# =============================================================================
+# API端点定义
+# =============================================================================
+
+@app.post("/api/dual-model-chat", response_model=DualModelChatResponse)
+async def dual_model_chat(request: DualModelChatRequest):
+    """【双模型问答API端点】
+    
+    接收用户消息，使用Gemini和硅基流动两个模型并行生成回答，
+    然后整合两个回答生成最终的综合回答。
+    
+    Args:
+        request: 包含用户消息和对话历史的请求
+        
+    Returns:
+        DualModelChatResponse: 包含两个模型回答和整合回答的响应
+    """
+    try:
+        # 构建消息历史
+        messages = []
+        
+        # 添加历史对话
+        for msg in request.conversation_history:
+            if msg.role == "user":
+                messages.append(HumanMessage(content=msg.content))
+            elif msg.role == "assistant":
+                messages.append(AIMessage(content=msg.content))
+        
+        # 添加当前用户消息
+        messages.append(HumanMessage(content=request.message))
+        
+        # 创建初始状态
+        initial_state = DualModelState(
+            messages=messages,
+            processing_stage="initial",
+            gemini_response=None,
+            siliconflow_response=None,
+            integrated_response=None
+        )
+        
+        # 执行双模型问答图
+        result = await dual_model_chat_graph.ainvoke(initial_state)
+        
+        # 构建响应
+        return DualModelChatResponse(
+            gemini_response=result.get("gemini_response", "无回答"),
+            siliconflow_response=result.get("siliconflow_response", "无回答"),
+            integrated_response=result.get("integrated_response", "整合失败"),
+            processing_stage=result.get("processing_stage", "unknown"),
+            success=result.get("processing_stage") == "completed",
+            error_message=None
+        )
+        
+    except Exception as e:
+        # 错误处理
+        return DualModelChatResponse(
+            gemini_response="模型调用失败",
+            siliconflow_response="模型调用失败",
+            integrated_response=f"双模型问答失败: {str(e)}",
+            processing_stage="error",
+            success=False,
+            error_message=str(e)
+        )
+
+
+@app.get("/api/health")
+async def health_check():
+    """健康检查端点"""
+    return {"status": "healthy", "service": "dual-model-chat-api"}
 
 
 def create_frontend_router(build_dir="../frontend/dist"):

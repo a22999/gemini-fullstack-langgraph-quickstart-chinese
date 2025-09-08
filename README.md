@@ -1,6 +1,6 @@
 # Gemini Fullstack LangGraph Quickstart
 
-This project demonstrates a fullstack application using a React frontend and a LangGraph-powered backend agent. The agent is designed to perform comprehensive research on a user's query by dynamically generating search terms, querying the web using Google Search, reflecting on the results to identify knowledge gaps, and iteratively refining its search until it can provide a well-supported answer with citations. This application serves as an example of building research-augmented conversational AI using LangGraph and Google's Gemini models.
+This project demonstrates a fullstack application using a React frontend and a LangGraph-powered backend agent. The agent is designed to perform comprehensive research on a user's query by dynamically generating search terms, querying the web using Google Search, reflecting on the results to identify knowledge gaps, and iteratively refining its search until it can provide a well-supported answer with citations. This application serves as an example of building research-augmented conversational AI using LangGraph with support for multiple LLM providers including Google's Gemini models and SiliconFlow.
 
 <img src="./app.png" title="Gemini Fullstack LangGraph" alt="Gemini Fullstack LangGraph" width="90%">
 
@@ -8,10 +8,12 @@ This project demonstrates a fullstack application using a React frontend and a L
 
 - 💬 Fullstack application with a React frontend and LangGraph backend.
 - 🧠 Powered by a LangGraph agent for advanced research and conversational AI.
-- 🔍 Dynamic search query generation using Google Gemini models.
+- 🤖 **Multi-provider LLM support**: Choose between Google Gemini or SiliconFlow models.
+- 🔍 Dynamic search query generation using configurable LLM models.
 - 🌐 Integrated web research via Google Search API.
 - 🤔 Reflective reasoning to identify knowledge gaps and refine searches.
 - 📄 Generates answers with citations from gathered sources.
+- ⚙️ Flexible configuration for different models and research parameters.
 - 🔄 Hot-reloading for both frontend and backend during development.
 
 ## Project Structure
@@ -29,10 +31,13 @@ Follow these steps to get the application running locally for development and te
 
 -   Node.js and npm (or yarn/pnpm)
 -   Python 3.11+
--   **`GEMINI_API_KEY`**: The backend agent requires a Google Gemini API key.
+-   **API Keys**: The backend agent requires an API key from your chosen LLM provider.
     1.  Navigate to the `backend/` directory.
     2.  Create a file named `.env` by copying the `backend/.env.example` file.
-    3.  Open the `.env` file and add your Gemini API key: `GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"`
+    3.  Configure your chosen provider:
+        - **For Google Gemini**: Add `GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"` and set `MODEL_PROVIDER=gemini`
+        - **For SiliconFlow**: Add `SILICONFLOW_API_KEY="YOUR_ACTUAL_API_KEY"` and set `MODEL_PROVIDER=siliconflow`
+    4.  Optionally configure specific models for different stages (see `.env.example` for available options)
 
 **2. Install Dependencies:**
 
@@ -113,8 +118,9 @@ Open your browser and navigate to `http://localhost:8123/app/` to see the applic
 - [Tailwind CSS](https://tailwindcss.com/) - For styling.
 - [Shadcn UI](https://ui.shadcn.com/) - For components.
 - [LangGraph](https://github.com/langchain-ai/langgraph) - For building the backend research agent.
-- [Google Gemini](https://ai.google.dev/models/gemini) - LLM for query generation, reflection, and answer synthesis.
+- [Google Gemini](https://ai.google.dev/models/gemini) - LLM option for query generation, reflection, and answer synthesis.
+- [SiliconFlow](https://siliconflow.cn/) - Alternative LLM provider with support for various open-source models.
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details. 
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.

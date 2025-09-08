@@ -1,54 +1,166 @@
 # =============================================================================
-# LangGraph 简单聊天代理 - 图定义模块
+# LangGraph 混合模型聊天代理 - 图定义模块
 # =============================================================================
-# 本文件定义了一个简单的聊天代理图，实现基本的对话功能
-# 主要功能：
-# 1. 接收用户消息
-# 2. 使用AI模型生成回复
-# 3. 维护对话历史
-# 4. 支持多轮对话
+# 本文件定义了支持混合模型的聊天代理图，实现：
+# 1. 多提供商支持：Gemini 和硅基流动
+# 2. 智能对话：使用AI模型生成回复
+# 3. 对话历史：维护完整的对话上下文
+# 4. 灵活配置：支持运行时模型切换
+# 5. 混合策略：不同场景使用不同模型
 # =============================================================================
 
 # 系统模块
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # LangChain 核心模块
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_google_genai import ChatGoogleGenerativeAI
 
-# LangGraph 图构建模块
+# LangGraph 相关导入
 from langgraph.graph import StateGraph, START, END
 
-# 本地模块
-from src.chat.state import ChatState, get_last_user_message
+# 本地模块导入
+from src.chat.state import ChatState, DualModelState, get_last_user_message
+from src.shared.configuration import ChatConfiguration
+from src.shared.model_factory import (
+    create_mixed_chat_model,
+    create_chat_model,
+    create_gemini_model,
+    create_siliconflow_model,
+    validate_config as validate_mixed_model_config,
+    get_model_info,
+    list_all_model_info
+)
 
 
 # =============================================================================
-# 配置管理
+# 配置管理和验证
 # =============================================================================
-def get_chat_model(config: RunnableConfig = None) -> ChatGoogleGenerativeAI:
-    """【获取聊天模型】
-    根据配置获取用于聊天的AI模型实例。
+
+def validate_chat_config():
+    """【验证聊天配置】
+    验证混合模型配置是否正确。
+    
+    Raises:
+        ValueError: 当配置不正确时抛出异常
+    """
+    if not validate_mixed_model_config():
+        # 获取详细的错误信息
+        provider = os.getenv("MODEL_PROVIDER", "gemini").lower()
+        if provider == "gemini" and not os.getenv("GEMINI_API_KEY"):
+            raise ValueError("GEMINI_API_KEY 环境变量未设置")
+        elif provider == "siliconflow" and not os.getenv("SILICONFLOW_API_KEY"):
+            raise ValueError("SILICONFLOW_API_KEY 环境变量未设置")
+        else:
+            raise ValueError(f"不支持的模型提供商或配置错误: {provider}")
+
+
+def get_mixed_chat_model(
+    config: Optional[RunnableConfig] = None,
+    stage: str = "chat",
+    temperature: float = 0.7,
+    **kwargs
+) -> Any:
+    """【获取混合聊天模型】
+    根据配置和阶段获取合适的AI模型实例。
     
     Args:
-        config: LangGraph运行时配置，可包含模型设置
+        config: LangGraph运行时配置
+        stage: 处理阶段 ('chat', 'query_generator', 'reflection', 'answer')
+        temperature: 模型温度参数
+        **kwargs: 其他模型参数
         
     Returns:
-        ChatGoogleGenerativeAI: 配置好的聊天模型实例
+        聊天模型实例（支持多种提供商）
     """
-    # 从配置中获取模型名称，默认使用gemini-2.0-flash
-    model_name = "gemini-2.0-flash"
-    if config and "configurable" in config:
-        model_name = config["configurable"].get("chat_model", model_name)
-    
-    # 创建并返回模型实例
-    return ChatGoogleGenerativeAI(
-        model=model_name,
-        temperature=0.7,  # 设置适中的创造性
-        google_api_key=os.getenv("GEMINI_API_KEY"),
+    return create_mixed_chat_model(
+        stage=stage,
+        config=config,
+        temperature=temperature,
+        **kwargs
     )
+
+
+def get_chat_model_info(config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
+    """【获取聊天模型信息】
+    获取当前配置下的模型详细信息。
+    
+    Args:
+        config: LangGraph运行时配置
+        
+    Returns:
+        Dict: 模型配置信息
+    """
+    return list_all_model_info(config)
+
+
+def get_chat_model(config: RunnableConfig = None):
+    """【获取聊天模型（兼容性函数）】
+    为了保持向后兼容性而保留的函数。
+    
+    Args:
+        config: LangGraph运行时配置
+        
+    Returns:
+        聊天模型实例
+    """
+    # 获取配置实例
+    chat_config = ChatConfiguration.from_runnable_config(config)
+    
+    # 从配置中获取模型名称
+    model_name = chat_config.chat_model
+    if config and "configurable" in config:
+        model_name = config["configurable"].get("chat_model", chat_config.chat_model)
+    else:
+        model_name = chat_config.chat_model
+    
+    # 使用模型工厂创建模型实例
+    return create_chat_model(
+        model_name=model_name,
+        config=config,
+        temperature=0.7,  # 设置适中的创造性
+        max_retries=2,
+    )
+
+
+def mixed_chat(state: ChatState, config: RunnableConfig) -> Dict[str, Any]:
+    """【混合模型聊天处理函数】
+    使用混合模型策略处理用户输入并生成AI回复。
+    
+    Args:
+        state: 当前聊天状态，包含消息历史
+        config: LangGraph运行时配置
+        
+    Returns:
+        Dict: 包含新消息的状态更新
+    """
+    # 验证配置
+    try:
+        validate_chat_config()
+    except ValueError as e:
+        return {"messages": [AIMessage(content=f"配置错误: {str(e)}")]}
+    
+    # 获取最后一条用户消息
+    last_message = get_last_user_message(state)
+    if not last_message:
+        return {"messages": [AIMessage(content="抱歉，我没有收到您的消息。")]}
+    
+    # 获取混合聊天模型
+    model = get_mixed_chat_model(config, stage="chat")
+    
+    # 生成回复
+    try:
+        # 使用模型生成回复
+        response = model.invoke(state["messages"])
+        
+        # 返回新消息
+        return {"messages": [response]}
+        
+    except Exception as e:
+        # 错误处理
+        error_message = f"生成回复时出错: {str(e)}"
+        return {"messages": [AIMessage(content=error_message)]}
 
 
 # =============================================================================
@@ -72,6 +184,12 @@ def chat_node(state: ChatState, config: RunnableConfig = None) -> Dict[str, Any]
     Returns:
         Dict[str, Any]: 包含新AI消息的状态更新
     """
+    
+    # 验证配置
+    try:
+        validate_chat_config()
+    except ValueError as e:
+        return {"messages": [AIMessage(content=f"配置错误: {str(e)}")]}
     
     # 获取聊天模型实例
     model = get_chat_model(config)
@@ -101,25 +219,269 @@ def chat_node(state: ChatState, config: RunnableConfig = None) -> Dict[str, Any]
 
 
 # =============================================================================
+# 双模型问答节点定义
+# =============================================================================
+
+def dual_model_initial_node(state: DualModelState, config: RunnableConfig = None) -> Dict[str, Any]:
+    """【双模型初始化节点】
+    初始化双模型问答流程，设置初始状态。
+    
+    Args:
+        state: 双模型聊天状态
+        config: LangGraph运行时配置
+        
+    Returns:
+        Dict[str, Any]: 更新后的状态
+    """
+    # 验证配置
+    try:
+        validate_chat_config()
+    except ValueError as e:
+        return {
+            "processing_stage": "error",
+            "messages": [AIMessage(content=f"配置错误: {str(e)}")]
+        }
+    
+    # 获取用户消息
+    last_message = get_last_user_message(state)
+    if not last_message:
+        return {
+            "processing_stage": "error",
+            "messages": [AIMessage(content="抱歉，我没有收到您的消息。")]
+        }
+    
+    return {
+        "processing_stage": "parallel_query",
+        "gemini_response": None,
+        "siliconflow_response": None,
+        "integrated_response": None
+    }
+
+
+def gemini_response_node(state: DualModelState, config: RunnableConfig = None) -> Dict[str, Any]:
+    """【Gemini回答生成节点】
+    使用Gemini模型生成回答。
+    
+    Args:
+        state: 双模型聊天状态
+        config: LangGraph运行时配置
+        
+    Returns:
+        Dict[str, Any]: 包含Gemini回答的状态更新
+    """
+    try:
+        # 创建Gemini模型，使用正确的模型名称
+        gemini_model = create_mixed_chat_model(
+            stage="chat",
+            config=config,
+            temperature=0.7,
+            provider_override="gemini",
+            model_override="gemini-1.5-flash"
+        )
+        
+        # 生成回答
+        response = gemini_model.invoke(state["messages"])
+        gemini_content = response.content if hasattr(response, 'content') else str(response)
+        
+        return {"gemini_response": gemini_content}
+        
+    except Exception as e:
+        return {"gemini_response": f"Gemini模型回答失败: {str(e)}"}
+
+
+def siliconflow_response_node(state: DualModelState, config: RunnableConfig = None) -> Dict[str, Any]:
+    """【硅基流动回答生成节点】
+    使用硅基流动模型生成回答。
+    
+    Args:
+        state: 双模型聊天状态
+        config: LangGraph运行时配置
+        
+    Returns:
+        Dict[str, Any]: 包含硅基流动回答的状态更新
+    """
+    try:
+        # 创建硅基流动模型
+        siliconflow_model = create_siliconflow_model(config=config, temperature=0.7)
+        
+        # 生成回答
+        response = siliconflow_model.invoke(state["messages"])
+        siliconflow_content = response.content if hasattr(response, 'content') else str(response)
+        
+        return {"siliconflow_response": siliconflow_content}
+        
+    except Exception as e:
+        return {"siliconflow_response": f"硅基流动模型回答失败: {str(e)}"}
+
+
+def integration_node(state: DualModelState, config: RunnableConfig = None) -> Dict[str, Any]:
+    """【回答整合节点】
+    整合两个模型的回答，生成最终的综合回答。
+    
+    Args:
+        state: 双模型聊天状态
+        config: LangGraph运行时配置
+        
+    Returns:
+        Dict[str, Any]: 包含最终整合回答的状态更新
+    """
+    try:
+        # 获取两个模型的回答
+        gemini_resp = state.get("gemini_response", "无回答")
+        siliconflow_resp = state.get("siliconflow_response", "无回答")
+        
+        # 构建整合提示
+        integration_prompt = f"""请基于以下两个AI模型的回答，生成一个综合、准确、有用的最终回答：
+
+**Gemini模型回答：**
+{gemini_resp}
+
+**硅基流动模型回答：**
+{siliconflow_resp}
+
+**要求：**
+1. 综合两个回答的优点
+2. 如果有冲突，选择更准确的信息
+3. 保持回答的完整性和连贯性
+4. 如果两个回答都有错误，请指出并提供正确信息
+5. 最终回答应该简洁明了，直接回应用户的问题
+
+**最终综合回答：**"""
+        
+        # 使用当前配置的模型进行整合（默认使用混合模型的chat阶段）
+        integration_model = get_mixed_chat_model(config, stage="chat")
+        
+        # 创建整合消息
+        integration_messages = [HumanMessage(content=integration_prompt)]
+        
+        # 生成整合回答
+        response = integration_model.invoke(integration_messages)
+        integrated_content = response.content if hasattr(response, 'content') else str(response)
+        
+        # 创建最终的AI消息
+        final_message = AIMessage(content=integrated_content)
+        
+        return {
+            "integrated_response": integrated_content,
+            "processing_stage": "completed",
+            "messages": [final_message]
+        }
+        
+    except Exception as e:
+        error_message = f"回答整合失败: {str(e)}"
+        return {
+            "integrated_response": error_message,
+            "processing_stage": "error",
+            "messages": [AIMessage(content=error_message)]
+        }
+
+
+def should_continue_to_integration(state: DualModelState) -> str:
+    """【条件判断函数】
+    判断是否可以进入整合阶段。
+    
+    Args:
+        state: 双模型聊天状态
+        
+    Returns:
+        str: 下一个节点名称
+    """
+    # 检查两个模型是否都已完成回答
+    if (state.get("gemini_response") is not None and 
+        state.get("siliconflow_response") is not None):
+        return "integration"
+    else:
+        return "wait"  # 继续等待
+
+
+# =============================================================================
 # 图构建与编译
 # =============================================================================
 
-# 创建状态图实例
-# 使用ChatState作为状态类型，定义图的数据流结构
-graph_builder = StateGraph(ChatState)
+def create_mixed_chat_graph() -> StateGraph:
+    """【创建混合模型聊天图】
+    构建并返回支持混合模型的聊天处理状态图。
+    
+    Returns:
+        StateGraph: 配置好的混合模型聊天状态图
+    """
+    # 创建状态图
+    graph = StateGraph(ChatState)
+    
+    # 添加混合模型聊天节点
+    graph.add_node("mixed_chat", mixed_chat)
+    
+    # 设置入口点
+    graph.add_edge(START, "mixed_chat")
+    
+    # 设置出口点
+    graph.add_edge("mixed_chat", END)
+    
+    return graph
 
-# 添加聊天节点
-# "chat"是节点的唯一标识符，chat_node是实际的处理函数
-graph_builder.add_node("chat", chat_node)
 
-# 设置图的边连接
-# 简单的线性流程：START -> chat -> END
-graph_builder.add_edge(START, "chat")
-graph_builder.add_edge("chat", END)
+def create_chat_graph() -> StateGraph:
+    """【创建聊天图（兼容性函数）】
+    构建并返回聊天处理的状态图。保持向后兼容性。
+    
+    Returns:
+        StateGraph: 配置好的聊天状态图
+    """
+    # 创建状态图
+    graph = StateGraph(ChatState)
+    
+    # 添加聊天节点
+    graph.add_node("chat", chat_node)
+    
+    # 设置入口点
+    graph.add_edge(START, "chat")
+    
+    # 设置出口点
+    graph.add_edge("chat", END)
+    
+    return graph
 
-# 编译图
-# 将图构建器编译成可执行的图对象
-graph = graph_builder.compile()
+
+def create_dual_model_chat_graph() -> StateGraph:
+    """【创建双模型问答图】
+    创建并编译双模型问答图实例，支持并行查询两个模型然后整合回答。
+    
+    Returns:
+        StateGraph: 配置好的双模型问答状态图
+    """
+    # 创建状态图
+    graph = StateGraph(DualModelState)
+    
+    # 添加节点
+    graph.add_node("initial", dual_model_initial_node)
+    graph.add_node("gemini_query", gemini_response_node)
+    graph.add_node("siliconflow_query", siliconflow_response_node)
+    graph.add_node("integration", integration_node)
+    
+    # 设置入口点
+    graph.add_edge(START, "initial")
+    
+    # 添加边：从初始化节点到两个并行查询节点
+    graph.add_edge("initial", "gemini_query")
+    graph.add_edge("initial", "siliconflow_query")
+    
+    # 添加边：从两个查询节点到整合节点
+    graph.add_edge("gemini_query", "integration")
+    graph.add_edge("siliconflow_query", "integration")
+    
+    # 设置结束点
+    graph.add_edge("integration", END)
+    
+    return graph
+
+
+# 编译图实例
+mixed_chat_graph = create_mixed_chat_graph().compile()
+chat_graph = create_chat_graph().compile()
+dual_model_chat_graph = create_dual_model_chat_graph().compile()
+
+# 默认使用混合模型图
+graph = mixed_chat_graph
 
 
 # =============================================================================

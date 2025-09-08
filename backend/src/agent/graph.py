@@ -43,8 +43,8 @@ from agent.prompts import (
     reflection_instructions,     # 反思评估提示词
     answer_instructions,         # 答案生成提示词
 )
-# Google Gemini 聊天模型
-from langchain_google_genai import ChatGoogleGenerativeAI
+# 模型工厂
+from agent.model_factory import create_chat_model, validate_model_config
 # 工具函数
 from agent.utils import (
     get_citations,           # 获取引用信息
@@ -56,12 +56,22 @@ from agent.utils import (
 # 加载环境变量
 load_dotenv()
 
-# 检查 API 密钥是否设置
-if os.getenv("GEMINI_API_KEY") is None:
-    raise ValueError("GEMINI_API_KEY is not set")
+# 检查模型配置是否正确
+if not validate_model_config():
+    provider = os.getenv("MODEL_PROVIDER", "gemini").lower()
+    if provider == "gemini":
+        raise ValueError("GEMINI_API_KEY is not set")
+    elif provider == "siliconflow":
+        raise ValueError("SILICONFLOW_API_KEY is not set")
+    else:
+        raise ValueError(f"Unsupported model provider: {provider}")
 
 # 初始化 Google Gemini API 客户端（用于 Google Search API）
-genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
+# 注意：Google Search 功能仍然需要 Gemini API
+if os.getenv("GEMINI_API_KEY"):
+    genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
+else:
+    genai_client = None
 
 
 # Nodes
@@ -94,13 +104,13 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
 
-    # 初始化 Gemini 2.0 Flash 模型
+    # 初始化查询生成模型
     # 温度设为1.0以增加查询的多样性和创造性
-    llm = ChatGoogleGenerativeAI(
-        model=configurable.query_generator_model,  # 查询生成模型（默认：gemini-2.0-flash）
-        temperature=1.0,                          # 高温度值，增加查询多样性
-        max_retries=2,                           # 最大重试次数
-        api_key=os.getenv("GEMINI_API_KEY"),     # API密钥
+    llm = create_chat_model(
+        model_name=configurable.query_generator_model,  # 查询生成模型
+        config=config,                                  # 运行时配置
+        temperature=1.0,                               # 高温度值，增加查询多样性
+        max_retries=2,                                 # 最大重试次数
     )
     # 配置结构化输出，确保返回符合SearchQueryList格式的结果
     structured_llm = llm.with_structured_output(SearchQueryList)
@@ -288,11 +298,11 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
     
     # 初始化反思评估模型
     # 使用较高温度(1.0)以获得更有创造性的知识空白识别和后续查询生成
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,                   # 反思模型（默认：gemini-2.5-flash）
+    llm = create_chat_model(
+        model_name=reasoning_model,             # 反思模型
+        config=config,                          # 运行时配置
         temperature=1.0,                        # 高温度值，增加创造性思考
         max_retries=2,                          # 最大重试次数
-        api_key=os.getenv("GEMINI_API_KEY"),    # API密钥
     )
     
     # 执行结构化反思评估
@@ -430,13 +440,13 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         summaries="\n---\n\n".join(state["web_research_result"]),      # 合并所有搜索结果
     )
 
-    # 初始化答案生成模型（默认使用 Gemini 2.5 Flash）
+    # 初始化答案生成模型
     # 温度设为0以确保答案的准确性和一致性
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,                   # 答案生成模型
+    llm = create_chat_model(
+        model_name=reasoning_model,             # 答案生成模型
+        config=config,                          # 运行时配置
         temperature=0,                          # 温度设为0，确保答案的准确性
         max_retries=2,                          # 最大重试次数
-        api_key=os.getenv("GEMINI_API_KEY"),    # API密钥
     )
     
     # 调用模型生成最终答案
